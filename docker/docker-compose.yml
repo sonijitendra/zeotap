@@ -1,0 +1,199 @@
+version: '3.9'
+
+services:
+  # ─── PostgreSQL ───
+  postgres:
+    image: postgres:16-alpine
+    container_name: ims-postgres
+    environment:
+      POSTGRES_DB: ims_db
+      POSTGRES_USER: ims_user
+      POSTGRES_PASSWORD: ims_secret_2024
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../backend/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ims_user -d ims_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ims-network
+
+  # ─── MongoDB ───
+  mongodb:
+    image: mongo:7.0
+    container_name: ims-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ims_user
+      MONGO_INITDB_ROOT_PASSWORD: ims_secret_2024
+      MONGO_INITDB_DATABASE: ims_signals
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ims-network
+
+  # ─── Redis ───
+  redis:
+    image: redis:7.2-alpine
+    container_name: ims-redis
+    command: redis-server --requirepass ims_secret_2024 --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "ims_secret_2024", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ims-network
+
+  # ─── Zookeeper (Kafka dependency) ───
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: ims-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - ims-network
+
+  # ─── Kafka ───
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: ims-kafka
+    depends_on:
+      zookeeper:
+        condition: service_started
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 1073741824
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - ims-network
+
+  # ─── Kafka Topic Initialization ───
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: ims-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      echo 'Creating Kafka topics...'
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic signals-ingestion --partitions 6 --replication-factor 1 --config retention.ms=604800000
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic signals-dlq --partitions 3 --replication-factor 1 --config retention.ms=2592000000
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic incident-events --partitions 3 --replication-factor 1 --config retention.ms=604800000
+      echo 'Topics created successfully.'
+      "
+    networks:
+      - ims-network
+
+  # ─── Prometheus ───
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: ims-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - ims-network
+
+  # ─── Grafana ───
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: ims-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - ims-network
+
+  # ─── Backend ───
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ims-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/ims_db
+      SPRING_DATASOURCE_USERNAME: ims_user
+      SPRING_DATASOURCE_PASSWORD: ims_secret_2024
+      SPRING_DATA_MONGODB_URI: mongodb://ims_user:ims_secret_2024@mongodb:27017/ims_signals?authSource=admin
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PASSWORD: ims_secret_2024
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    networks:
+      - ims-network
+
+  # ─── Frontend ───
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: ims-frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    networks:
+      - ims-network
+
+volumes:
+  postgres_data:
+  mongo_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  ims-network:
+    driver: bridge

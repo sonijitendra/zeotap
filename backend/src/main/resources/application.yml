@@ -1,0 +1,153 @@
+# ════════════════════════════════════════════════════════════════
+# IMS Backend Configuration
+# ════════════════════════════════════════════════════════════════
+
+server:
+  port: 8080
+  tomcat:
+    threads:
+      max: 400
+      min-spare: 20
+    accept-count: 200
+
+spring:
+  application:
+    name: ims-backend
+  threads:
+    virtual:
+      enabled: true
+
+  # ─── PostgreSQL ───
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ims_db
+    username: ims_user
+    password: ims_secret_2024
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 10000
+      max-lifetime: 600000
+      pool-name: IMS-PG-Pool
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+        format_sql: false
+
+  # ─── MongoDB ───
+  data:
+    mongodb:
+      uri: mongodb://ims_user:ims_secret_2024@localhost:27017/ims_signals?authSource=admin
+      auto-index-creation: true
+
+    # ─── Redis ───
+    redis:
+      host: localhost
+      port: 6379
+      password: ims_secret_2024
+      timeout: 5000ms
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 5
+
+  # ─── Kafka ───
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 30000
+        linger.ms: 5
+        batch.size: 32768
+        compression.type: lz4
+    consumer:
+      group-id: ims-signal-processor
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.ims.dto.request,com.ims.dto.response"
+        max.poll.records: 500
+        max.poll.interval.ms: 300000
+        session.timeout.ms: 30000
+    listener:
+      concurrency: 6
+      ack-mode: manual
+      type: batch
+
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+# ─── Actuator & Metrics ───
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+# ─── Springdoc / Swagger ───
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+# ─── Application Custom Config ───
+ims:
+  signal:
+    kafka-topic: signals-ingestion
+    dlq-topic: signals-dlq
+    incident-topic: incident-events
+  debounce:
+    window-seconds: 10
+    threshold: 100
+    lock-wait-ms: 500
+    lock-lease-ms: 3000
+  rate-limit:
+    permits-per-second: 10000
+    timeout-ms: 100
+  retry:
+    max-attempts: 3
+    initial-delay-ms: 100
+    multiplier: 2.0
+    max-delay-ms: 5000
+  cache:
+    dashboard-ttl-seconds: 5
+    incident-ttl-seconds: 30
+
+logging:
+  level:
+    com.ims: DEBUG
+    org.springframework.kafka: WARN
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{ISO8601} [%thread] %-5level [%X{traceId:-}] %logger{36} - %msg%n"

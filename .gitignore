@@ -1,0 +1,32 @@
+# ═══ Backend ═══
+backend/target/
+backend/.mvn/
+backend/*.jar
+backend/*.war
+
+# ═══ Frontend ═══
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# ═══ IDE ═══
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# ═══ OS ═══
+.DS_Store
+Thumbs.db
+
+# ═══ Docker ═══
+docker/postgres_data/
+docker/mongo_data/
+docker/redis_data/
+docker/prometheus_data/
+docker/grafana_data/
+
+# ═══ Logs ═══
+*.log
+logs/
